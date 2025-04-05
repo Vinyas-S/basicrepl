@@ -2,35 +2,61 @@ import java.io.*;
 import java.util.*;
 import java.nio.file.*;
 import java.util.stream.*;
+import sun.misc.Signal;
+import sun.misc.SignalHandler;
 
 public class Shell {
-    private static boolean running=true;
-    private static Path currentDir= Paths.get(System.getProperty("user.dir"));
+    private static volatile boolean running = true;
+    private static volatile boolean interrupted = false;
+    private static Path currentDir = Paths.get(System.getProperty("user.dir"));
 
-    public static void main(String args[]){
-        Scanner scanner= new Scanner(System.in);
+    public static void main(String[] args) {
+        handleSigInt();
+        Scanner scanner = new Scanner(System.in);
 
-        while(running){
-            try{
+        while (running) {
+            try {
                 System.out.print("$ ");
-                String input = scanner.nextLine().trim();
-                if(input.isEmpty()){
+                String input;
+                try {
+                    input = scanner.nextLine().trim();
+                } catch (NoSuchElementException e) {
+                    if (interrupted) {
+                        interrupted = false;
+                        System.out.println();
+                        continue;
+                    }
+                    break;
+                }
+
+                if (input.isEmpty()) {
                     continue;
                 }
-                String[] parts= input.split(" ",2);
+
+                String[] parts = input.split(" ", 2);
                 String command = parts[0];
-                String value= parts.length > 1 ? parts[1] : "";
+                String value = parts.length > 1 ? parts[1] : "";
 
                 executeCommand(command, value);
-            }catch (Exception e) {
+            } catch (Exception e) {
                 System.err.println("shell: error: " + e.getMessage());
             }
         }
     }
 
+    private static void handleSigInt() {
+        Signal.handle(new Signal("INT"), new SignalHandler() {
+            @Override
+            public void handle(Signal sig) {
+                interrupted = true;
+                System.out.print("\n(Type 'exit' to quit)\n");
+            }
+        });
+    }
+
     private static void executeCommand(String command, String value) {
-        try{
-            switch (command){
+        try {
+            switch (command) {
                 case "pwd":
                     pwd();
                     break;
@@ -48,9 +74,11 @@ public class Shell {
                     break;
                 case "exit":
                     exit();
-                    break;    
+                    break;
+                default:
+                    System.err.println("shell: unknown command: " + command);
             }
-        }catch (Exception e) {
+        } catch (Exception e) {
             System.err.println("shell: " + command + ": " + e.getMessage());
         }
     }
@@ -60,44 +88,48 @@ public class Shell {
     }
 
     private static void ls(String value) {
-        Path dir;
-        if(value.isEmpty()){
-            dir = currentDir;
-        }else{
-            dir = currentDir.resolve(value).normalize();
-        }
+        Path dir = value.isEmpty() ? currentDir : currentDir.resolve(value).normalize();
         try {
             if (!Files.exists(dir)) {
                 throw new IOException("Path does not exist: " + dir);
             }
             if (Files.isDirectory(dir)) {
-                try(Stream<Path> stream = Files.list(dir)){;
-                    stream.forEach(d->{
-                        try{
-                            String type=Files.isDirectory(d) ? "d" : "-";
+                List<Path> entries;
+                try (Stream<Path> stream = Files.list(dir)) {
+                    entries = stream.collect(Collectors.toList());
+                }
+
+                System.out.println("total " + entries.size());
+
+                try (Stream<Path> stream = Files.list(dir)) {
+                    stream.forEach(d -> {
+                        try {
+                            String type = Files.isDirectory(d) ? "d" : "-";
                             System.out.printf("%s %-20s %6d bytes%n",
                                     type,
                                     d.getFileName(),
                                     Files.size(d));
-                        }catch(IOException e){
+                        } catch (IOException e) {
                             System.err.println("Error accessing file: " + d);
                         }
                     });
                 }
-            }
-            else{
+            } else {
+                System.out.println("(total 1)");
                 System.out.println(dir.getFileName());
             }
-        }
-        catch (IOException e) {
+        } catch (IOException e) {
             throw new RuntimeException(e.getMessage());
         }
     }
 
     private static void cd(String value) {
-        if (value.isEmpty()) {
+        if (value.isEmpty() || value.equals("~")) {
             value = System.getProperty("user.home");
+        } else if (value.startsWith("~/")) {
+            value = System.getProperty("user.home") + value.substring(1);
         }
+
         try {
             Path newPath = currentDir.resolve(value).normalize();
             if (!Files.exists(newPath)) {
@@ -115,6 +147,9 @@ public class Shell {
     }
 
     private static void echo(String text) {
+        if (text.startsWith("\"") && text.endsWith("\"")) {
+            text = text.substring(1, text.length() - 1);
+        }
         System.out.println(text);
     }
 
@@ -142,6 +177,7 @@ public class Shell {
             throw new RuntimeException(e.getMessage());
         }
     }
+
     private static void exit() {
         System.out.println("Goodbye!");
         running = false;
